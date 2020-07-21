@@ -1,26 +1,20 @@
-FROM debian:stretch-20180831
-SHELL ["/bin/bash", "-c"]
-WORKDIR /root
+FROM chaquopy-base
 
-RUN echo "progress=dot:giga" > .wgetrc
+# When moving to a new version of the NDK, carefully review the following:
+# * The release notes (https://developer.android.com/ndk/downloads/revision_history)
+# * https://android.googlesource.com/platform/ndk/+/ndk-release-rXX/docs/BuildSystemMaintainers.md,
+#   where XX is the NDK version. Check over the `master` version of that document as well.
+RUN yes | android-sdk/cmdline-tools/tools/bin/sdkmanager "ndk;18.1.5063045"
 
-# NDK
-RUN apt-get update && \
-    apt-get install -y wget xz-utils
-RUN filename=crystax-ndk-10.3.2-linux-x86_64.tar.xz && \
-    wget https://www.crystax.net/download/$filename && \
-    tar -xf $filename && \
-    rm $filename && \
-    mv crystax-ndk-* crystax
+COPY build-toolchains.sh build-toolchain.sh build-common.sh target/
+RUN target/build-toolchains.sh android-sdk/ndk/* "arm64-v8a armeabi-v7a x86 x86_64"
 
-# Python 3.6 isn't included in this version of Debian, so use a third-party build.
-RUN wget https://github.com/chriskuehl/python3.6-debian-stretch/releases/download/v3.6.3-1-deb9u1/{python3.6,python3.6-minimal,libpython3.6,libpython3.6-minimal,libpython3.6-stdlib}_3.6.3-1.deb9u1_amd64.deb && \
-    apt install -y ./*.deb && \
-    rm *.deb
-
-# Copy Python headers and libraries into the NDK.
+# Copy Python headers and libraries into the toolchains.
 COPY unpackage-target.sh target/
-RUN apt-get update && \
-    apt-get install -y unzip && \
-    target/unpackage-target.sh crystax \
-        https://chaquo.com/maven/com/chaquo/python/target/3.6.5-11
+RUN mkdir maven && \
+    repo="https://chaquo.com/maven" && version="3.8.3-0" && \
+    for abi in $(cd target/toolchains && echo *); do \
+        wget -P maven $repo/com/chaquo/python/target/$version/target-$version-$abi.zip; \
+    done && \
+    target/unpackage-target.sh maven target/toolchains && \
+    rm -r maven

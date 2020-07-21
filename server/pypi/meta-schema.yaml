@@ -88,4 +88,23 @@ properties:
 
     additionalProperties: false
 
+  about:
+    type: object
+    default: {}
+    properties:
+
+      # Filename, relative to the source directory, to add to the wheel's .dist-info
+      # directory. To add a file from `packages/<name>`, prefix this with `../../../..`.
+      #
+      # This can be omitted if the source directory already includes a file whose name starts
+      # with LICEN[CS]E or COPYING, case-insensitive.
+      #
+      # TODO: if source directory doesn't have any files with these names, check recipe
+      # directory as well. That way the ../../.. syntax will never be needed.
+      license_file:
+        type: string
+        default: ""
+
+    additionalProperties: false
+
 additionalProperties: false

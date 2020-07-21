@@ -1,19 +1,4 @@
 /maven
 
-.DS_Store
-
-**/.idea/caches
-**/.idea/libraries
-**/.idea/misc.xml
-**/.idea/workspace.xml
-*.iml
-
-.externalNativeBuild
-.gradle
-local.properties
-
-__pycache__
 *.pyc
-*.pyd
-*.so
 hs_err*.log
