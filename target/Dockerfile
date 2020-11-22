@@ -12,7 +12,7 @@ RUN target/build-toolchains.sh android-sdk/ndk/* "arm64-v8a armeabi-v7a x86 x86_
 # Copy Python headers and libraries into the toolchains.
 COPY unpackage-target.sh target/
 RUN mkdir maven && \
-    repo="https://chaquo.com/maven" && version="3.8.3-0" && \
+    repo="https://chaquo.com/maven" && version="3.8.6-0" && \
     for abi in $(cd target/toolchains && echo *); do \
         wget -P maven $repo/com/chaquo/python/target/$version/target-$version-$abi.zip; \
     done && \

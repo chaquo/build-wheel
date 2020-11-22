@@ -36,7 +36,9 @@ The following examples are included:
 * chaquopy-libzmq: a non-Python library, downloaded from a URL.
 * pyzmq: a Python package which depends on a non-Python library. A patch is used to help
   `setup.py` find the library.
-
+* scikit-learn: requires several other packages at build time (listed in `meta.yaml`). Before
+  running the build, download those packages from [the public
+  repository](https://chaquo.com/pypi-7.0/) and copy them into the `dist` directory.
 
 # Building with Docker
 

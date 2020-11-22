@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Copyright (c) 2020 Chaquo Ltd. All rights reserved."""
 
 import argparse
 from copy import deepcopy
@@ -139,6 +140,7 @@ class BuildWheel:
                 log("Skipping requirements extraction due to --no-reqs")
             else:
                 self.extract_requirements()
+            self.update_env()
             wheel_filename = self.build_wheel()
             return self.fix_wheel(wheel_filename)
 
@@ -274,17 +276,6 @@ class BuildWheel:
 
     def build_wheel(self):
         cd(f"{self.build_dir}/src")
-        self.update_env()
-        os.environ.update({  # Conda variable names, except those starting with CHAQUOPY.
-            "CHAQUOPY_ABI": self.abi,
-            "CHAQUOPY_PYTHON": PYTHON_VERSION,
-            "CPU_COUNT": str(multiprocessing.cpu_count()),
-            "PKG_NAME": self.package,
-            "PKG_VERSION": self.version,
-            "RECIPE_DIR": self.package_dir,
-            "SRC_DIR": os.getcwd(),
-        })
-
         build_script = f"{self.package_dir}/build.sh"
         if exists(build_script):
             return self.build_with_script(build_script)
@@ -304,14 +295,15 @@ class BuildWheel:
         for package, version in reqs:
             dist_dir = f"{PYPI_DIR}/dist/{normalize_name_pypi(package)}"
             matches = []
-            for filename in os.listdir(dist_dir):
-                match = re.search(fr"^{normalize_name_wheel(package)}-"
-                                  fr"{normalize_version(version)}-(?P<build_num>\d+)-"
-                                  fr"({self.compat_tag}|"
-                                  fr"py{PYTHON_VERSION[0]}-none-{self.platform_tag})"
-                                  fr"\.whl$", filename)
-                if match:
-                    matches.append(match)
+            if exists(dist_dir):
+                for filename in os.listdir(dist_dir):
+                    match = re.search(fr"^{normalize_name_wheel(package)}-"
+                                      fr"{normalize_version(version)}-(?P<build_num>\d+)-"
+                                      fr"({self.compat_tag}|"
+                                      fr"py{PYTHON_VERSION[0]}-none-{self.platform_tag})"
+                                      fr"\.whl$", filename)
+                    if match:
+                        matches.append(match)
             if not matches:
                 raise CommandError(f"Couldn't find wheel for requirement {package} {version}")
             matches.sort(key=lambda match: int(match.group("build_num")))
@@ -383,6 +375,8 @@ class BuildWheel:
     def update_env(self):
         env = {}
 
+        # reqs_dir is needed by some setup.py scripts, for example those which call
+        # numpy.get_include().
         pythonpath = [join(PYPI_DIR, "build-packages"), self.reqs_dir]
         if "PYTHONPATH" in os.environ:
             pythonpath.append(os.environ["PYTHONPATH"])
@@ -440,6 +434,8 @@ class BuildWheel:
             env["CFLAGS"] += f" -I{reqs_prefix}/include"
             env["LDFLAGS"] += (f" -L{reqs_prefix}/lib"
                                f" -Wl,--rpath-link,{reqs_prefix}/lib")
+            env["PKG_CONFIG"] = "pkg-config --define-prefix"
+            env["PKG_CONFIG_LIBDIR"] = f"{reqs_prefix}/lib/pkgconfig"
 
         env["ARFLAGS"] = "rc"
 
@@ -454,9 +450,21 @@ class BuildWheel:
             env["CFLAGS"] += f" -idirafter {self.python_include_dir}"
             env["LDFLAGS"] += f" -lpython{PYTHON_SUFFIX}"
 
+        env.update({  # Conda variable names, except those starting with CHAQUOPY.
+            "CHAQUOPY_ABI": self.abi,
+            "CHAQUOPY_PYTHON": PYTHON_VERSION,
+            "CPU_COUNT": str(multiprocessing.cpu_count()),
+            "PKG_BUILDNUM": str(self.meta["build"]["number"]),
+            "PKG_NAME": self.package,
+            "PKG_VERSION": self.version,
+            "RECIPE_DIR": self.package_dir,
+            "SRC_DIR": os.getcwd(),
+        })
+
         if self.verbose:
+            # Format variables so they can be pasted into a shell when troubleshooting.
             log("Environment set as follows:\n" +
-                "\n".join(f"export {name}='{env[name]}'" for name in sorted(env.keys())))
+                "\n".join(f"export {key}='{value}'" for key, value in env.items()))
         os.environ.update(env)
 
         if self.needs_cmake:
@@ -528,13 +536,6 @@ class BuildWheel:
             raise CommandError(f"Failed to detect API level of toolchain {self.toolchain}")
 
     def fix_wheel(self, in_filename):
-        pure_match = re.search(r"^(.+?)-(.+?)-(.+-none-any)\.whl$", basename(in_filename))
-        if pure_match:
-            is_pure = True
-            self.compat_tag = pure_match.group(3)
-        else:
-            is_pure = False
-
         tmp_dir = f"{self.build_dir}/fix_wheel"
         ensure_empty(tmp_dir)
         run(f"unzip -d {tmp_dir} -q {in_filename}")
@@ -555,26 +556,31 @@ class BuildWheel:
                                           if re.search(SO_PATTERN, name))
 
         reqs = set()
-        if not is_pure:
-            log("Processing native libraries")
-            for original_path, _, _ in csv.reader(open(f"{info_dir}/RECORD")):
-                if re.search(fr"{SO_PATTERN}|\.a$", original_path):
-                    # Because distutils doesn't propertly support cross-compilation, native
-                    # modules will be tagged with the build platform, e.g.
-                    # `foo.cpython-36m-x86_64-linux-gnu.so`. Remove these tags.
-                    original_path = join(tmp_dir, original_path)
-                    fixed_path = re.sub(r"\.(cpython-[^.]+|abi3)\.so$", ".so", original_path)
-                    if fixed_path != original_path:
-                        run(f"mv {original_path} {fixed_path}")
+        log("Processing native binaries")
+        for original_path, _, _ in csv.reader(open(f"{info_dir}/RECORD")):
+            is_shared = bool(re.search(SO_PATTERN, original_path))
+            is_static = original_path.endswith(".a")
+            is_executable = original_path.startswith("chaquopy/bin")
+            if not any([is_executable, is_shared, is_static]):
+                continue
 
-                    run(f"chmod +w {fixed_path}")
-                    run(f"{os.environ['STRIP']} --strip-unneeded {fixed_path}")
-                    if re.search(SO_PATTERN, fixed_path):
-                        reqs.update(self.check_requirements(fixed_path, available_libs))
-                        # Paths from the build machine will be useless at runtime, unless they
-                        # use $ORIGIN, but that isn't supported until API level 24
-                        # (https://github.com/aosp-mirror/platform_bionic/blob/master/android-changes-for-ndk-developers.md).
-                        run(f"patchelf --remove-rpath {fixed_path}")
+            # Because distutils doesn't propertly support cross-compilation, native
+            # modules will be tagged with the build platform, e.g.
+            # `foo.cpython-36m-x86_64-linux-gnu.so`. Remove these tags.
+            original_path = join(tmp_dir, original_path)
+            fixed_path = re.sub(r"\.(cpython-[^.]+|abi3)\.so$", ".so", original_path)
+            if fixed_path != original_path:
+                run(f"mv {original_path} {fixed_path}")
+
+            run(f"chmod +w {fixed_path}")
+            run(f"{os.environ['STRIP']} --strip-unneeded {fixed_path}")
+
+            if is_shared or is_executable:
+                reqs.update(self.check_requirements(fixed_path, available_libs))
+                # Paths from the build machine will be useless at runtime, unless they
+                # use $ORIGIN, but that isn't supported until API level 24
+                # (https://github.com/aosp-mirror/platform_bionic/blob/master/android-changes-for-ndk-developers.md).
+                run(f"patchelf --remove-rpath {fixed_path}")
 
         reqs.update(self.get_requirements("host"))
         if reqs:
@@ -590,7 +596,7 @@ class BuildWheel:
         return out_filename
 
     def package_wheel(self, in_dir, out_dir):
-        build_num = str(self.meta["build"]["number"])
+        build_num = os.environ["PKG_BUILDNUM"]
         info_dir = f"{in_dir}/{self.name_version}.dist-info"
         update_message_file(f"{info_dir}/WHEEL",
                             {"Wheel-Version": "1.0",
