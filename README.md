@@ -7,7 +7,7 @@ ABIs](https://developer.android.com/ndk/guides/abis) (armeabi-v7a, arm64-v8a, x8
 
 # License
 
-Copyright (c) 2020 Chaquo Ltd
+Copyright (c) 2021 Chaquo Ltd
 
 If you have purchased a license for build-wheel, then you may use the tool and distribute the
 resulting .whl files however you like, including building them into an app and distributing
@@ -16,11 +16,11 @@ that app. However, redistribution of build-wheel itself is not permitted.
 
 # Adding a package
 
-Create a new subdirectory in `packages`. Its name must be in PyPI normalized form (PEP 503).
-Alternatively, you can create this subdirectory somewhere else, and use the `--extra-packages`
-option when calling `build-wheel.py`.
+Create a recipe directory in `packages`. Its name must be in PyPI normalized form (PEP 503).
+Alternatively, you can create this directory somewhere else, and pass its path when calling
+`build-wheel.py`.
 
-Inside the subdirectory, add the following files:
+Inside the recipe directory, add the following files:
 
 * A `meta.yaml` file. This supports a subset of Conda syntax, defined in `meta-schema.yaml`.
 * For non-Python packages, a `build.sh` script. See `build-wheel.py` for environment variables
@@ -29,20 +29,23 @@ Inside the subdirectory, add the following files:
 
 The following examples are included:
 
-* bcrypt: a minimal example, downloaded from PyPI.
+* multidict: a minimal example, downloaded from PyPI.
 * python-example: a pybind11-based package, downloaded from a Git repository.
 * cmake-example: similar to python-example, but uses cmake. A patch is used to help cmake find
   the Android toolchain file.
 * chaquopy-libzmq: a non-Python library, downloaded from a URL.
 * pyzmq: a Python package which depends on a non-Python library. A patch is used to help
   `setup.py` find the library.
-* scikit-learn: requires several other packages at build time (listed in `meta.yaml`). Before
-  running the build, download those packages from [the public
-  repository](https://chaquo.com/pypi-7.0/) and copy them into the `dist` directory.
+* scikit-learn: lists several build-time requirements in `meta.yaml`:
+  * The "build" requirement (Cython) will be installed automatically.
+  * The "host" requirements (NumPy etc.) should be downloaded from [the public
+    repository](https://chaquo.com/pypi-7.0/) and copied into `server/pypi/dist` before running
+    the build. A patch is used to allow NumPy and SciPy to be imported during the build.
+
 
 # Building with Docker
 
-Docker is the simplest and most reliable way to get all of build-wheel's dependencies set up.
+Docker is the easiest way to set up all of build-wheel's dependencies.
 
 If necessary, install Docker using the [instructions on its
 website](https://docs.docker.com/install/#supported-platforms).
@@ -63,7 +66,7 @@ Then run build-wheel from the `server/pypi` directory as follows:
 Where:
 
 * `<abi>` is an [Android ABI](https://developer.android.com/ndk/guides/abis).
-* `<package>` is the name of the subdirectory created above.
+* `<package>` is the name of the recipe directory created above.
 
 The resulting .whl files will be generated in `server/pypi/dist`.
 

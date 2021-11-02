@@ -1,5 +1,9 @@
-#!/usr/bin/env python3
-"""Copyright (c) 2020 Chaquo Ltd. All rights reserved."""
+#!/usr/bin/env python3.8
+#
+# We require the build and target Python versions to be the same, because many setup.py scripts
+# are affected by sys.version.
+
+"""Copyright (c) 2021 Chaquo Ltd. All rights reserved."""
 
 import argparse
 from copy import deepcopy
@@ -26,22 +30,23 @@ import yaml
 
 PROGRAM_NAME = basename(__file__)
 PYPI_DIR = abspath(dirname(__file__))
+RECIPES_DIR = f"{PYPI_DIR}/packages"
 
-# The suffix may contain flags from PEP 3149.
-PYTHON_VERSION = "3.8"
-PYTHON_SUFFIX = PYTHON_VERSION
+PYTHON_VERSION = "3.8"  # Should be the same as the #! line above.
+PYTHON_SUFFIX = PYTHON_VERSION  # May contain flags from PEP 3149.
 
-# All libraries are listed under their SONAMEs.
-STANDARD_LIBS = {
-    # Android-provided libraries up to our current minimum API level
-    # (https://developer.android.com/ndk/guides/stable_apis).
-    "libandroid.so", "libc.so", "libdl.so", "libEGL.so", "libGLESv1_CM.so", "libGLESv2.so",
-    "libjnigraphics.so", "liblog.so", "libm.so", "libOpenMAXAL.so", "libOpenSLES.so",
-    "libz.so",
+# Libraries are grouped by minimum API level and listed under their SONAMEs.
+STANDARD_LIBS = [
+    # Android native APIs (https://developer.android.com/ndk/guides/stable_apis)
+    (16, ["libandroid.so", "libc.so", "libdl.so", "libEGL.so", "libGLESv1_CM.so", "libGLESv2.so",
+          "libjnigraphics.so", "liblog.so", "libm.so", "libOpenMAXAL.so", "libOpenSLES.so",
+          "libz.so"]),
+    (21, ["libmediandk.so"]),
 
-    # Chaquopy-provided libraries (libpythonX.Y.so is added below)
-    "libcrypto_chaquopy.so", "libsqlite3_chaquopy.so", "libssl_chaquopy.so",
-}
+    # Chaquopy-provided libraries
+    (0, ["libcrypto_chaquopy.so", f"libpython{PYTHON_SUFFIX}.so", "libsqlite3_chaquopy.so",
+         "libssl_chaquopy.so"]),
+]
 
 # Not including chaquopy-libgfortran: the few packages which require it must specify it in
 # meta.yaml. That way its location will always be passed to the linker with an -L flag, and we
@@ -50,7 +55,8 @@ STANDARD_LIBS = {
 # TODO: break out the build script fragments which get the actual version numbers from the
 # toolchain, and call them here.
 COMPILER_LIBS = {
-    "libc++_shared.so": ("chaquopy-libcxx", "7000"),
+    "libc++_shared.so": ("chaquopy-libcxx", "10000"),
+    "libomp.so": ("chaquopy-libomp", "9.0.9"),
 }
 
 
@@ -79,7 +85,7 @@ class BuildWheel:
             self.parse_args()
             self.package_dir = self.find_package(self.package)
 
-            self.meta = self.load_meta(self.package)
+            self.meta = self.load_meta()
             self.package = self.meta["package"]["name"]
             self.version = str(self.meta["package"]["version"])  # YAML may parse it as a number.
             self.name_version = (normalize_name_wheel(self.package) + "-" +
@@ -123,6 +129,7 @@ class BuildWheel:
         ensure_dir(self.version_dir)
         cd(self.version_dir)
         self.build_dir = f"{self.version_dir}/{self.compat_tag}"
+        self.src_dir = f"{self.build_dir}/src"
 
         if self.no_unpack:
             log("Skipping download and unpack due to --no-unpack")
@@ -158,13 +165,10 @@ class BuildWheel:
 
         ap.add_argument("--no-reqs", action="store_true", help="Skip extracting requirements "
                         "(any existing build/.../requirements directory will be reused)")
-        ap.add_argument("--extra-packages", metavar="DIR", default=[], action="append",
-                        help="Extra directory to search for package information, in addition "
-                        "to packages/ in the same directory as this script. Can be used "
-                        "multiple times.")
         ap.add_argument("--toolchain", metavar="DIR", type=abspath, required=True,
                         help="Path to toolchain")
-        ap.add_argument("package", help="Name of package to build")
+        ap.add_argument("package", help=f"Name of a package in {RECIPES_DIR}, or if it "
+                        f"contains a slash, path to a recipe directory")
         ap.parse_args(namespace=self)
 
         self.detect_toolchain()
@@ -173,42 +177,24 @@ class BuildWheel:
     def find_python(self):
         self.python_include_dir = f"{self.toolchain}/sysroot/usr/include/python{PYTHON_SUFFIX}"
         assert_isdir(self.python_include_dir)
-        python_lib = f"{self.toolchain}/sysroot/usr/lib/libpython{PYTHON_SUFFIX}.so"
-        assert_exists(python_lib)
-        STANDARD_LIBS.add(basename(python_lib))
+        self.python_lib = f"{self.toolchain}/sysroot/usr/lib/libpython{PYTHON_SUFFIX}.so"
+        assert_exists(self.python_lib)
 
-        # We require the build and target Python versions to be the same, because
-        # many setup.py scripts are affected by sys.version.
-        if "{}.{}".format(*sys.version_info[:2]) != PYTHON_VERSION:
-            raise CommandError("This script requires Python " + PYTHON_VERSION)
         self.pip = f"python{PYTHON_VERSION} -m pip --disable-pip-version-check"
-
         self.compat_tag = (f"cp{PYTHON_VERSION.replace('.', '')}-"
                            f"cp{PYTHON_SUFFIX.replace('.', '')}-"
                            f"{self.platform_tag}")
 
     def unpack_source(self):
-        src_dir = f"{self.build_dir}/src"
         source = self.meta["source"]
         if not source:
-            ensure_dir(src_dir)
-        elif "git_url" in source:
-            git_rev = source["git_rev"]
-            is_hash = len(git_rev) == 40
-            clone_cmd = "git clone --recurse-submodules"
-            if not is_hash:
-                # Unfortunately --depth doesn't apply to submodules, and --shallow-submodules
-                # doesn't work either (https://github.com/rust-lang/rust/issues/34228).
-                clone_cmd += f" -b {git_rev} --depth 1 "
-            run(f"{clone_cmd} {source['git_url']} {src_dir}")
-            if is_hash:
-                run(f"git -C {src_dir} checkout {git_rev}")
-                run(f"git -C {src_dir} submodule update --init")
+            ensure_dir(self.src_dir)
         elif "path" in source:
             abs_path = abspath(join(self.package_dir, source["path"]))
-            run(f"cp -a {abs_path} {src_dir}")
+            run(f"cp -a {abs_path} {self.src_dir}")
         else:
-            source_filename = (self.download_pypi() if source == "pypi"
+            source_filename = (self.download_git(source) if "git_url" in source
+                               else self.download_pypi() if source == "pypi"
                                else self.download_url(source["url"]))
             temp_dir = tempfile.mkdtemp(prefix="build-wheel-")
             if source_filename.endswith("zip"):
@@ -218,23 +204,44 @@ class BuildWheel:
 
             files = os.listdir(temp_dir)
             if len(files) == 1 and isdir(f"{temp_dir}/{files[0]}"):
-                run(f"mv {temp_dir}/{files[0]} {src_dir}")
+                run(f"mv {temp_dir}/{files[0]} {self.src_dir}")
                 run(f"rm -rf {temp_dir}")
             else:
-                run(f"mv {temp_dir} {src_dir}")
+                run(f"mv {temp_dir} {self.src_dir}")
 
             # This is pip's equivalent to our requirements mechanism.
-            if exists(f"{src_dir}/pyproject.toml"):
-                run(f"rm {src_dir}/pyproject.toml")
+            if exists(f"{self.src_dir}/pyproject.toml"):
+                run(f"rm {self.src_dir}/pyproject.toml")
 
-        license_file = self.meta["about"]["license_file"]
-        if license_file:
-            assert_exists(join(src_dir, license_file))
+    def download_git(self, source):
+        git_rev = source["git_rev"]
+        is_hash = len(str(git_rev)) == 40
+
+        # Clones with many submodules can be slow, so cache the clean repository tree.
+        tgz_filename = f"{self.package}-{git_rev}.tar.gz"
+        if exists(tgz_filename):
+            log("Using cached repository")
+        else:
+            clone_cmd = "git clone --recurse-submodules"
+            if not is_hash:
+                # Unfortunately --depth doesn't apply to submodules, and --shallow-submodules
+                # doesn't work either (https://github.com/rust-lang/rust/issues/34228).
+                clone_cmd += f" -b {git_rev} --depth 1 "
+            temp_dir = tempfile.mkdtemp(prefix="build-wheel-")
+            run(f"{clone_cmd} {source['git_url']} {temp_dir}")
+            if is_hash:
+                run(f"git -C {temp_dir} checkout {git_rev}")
+                run(f"git -C {temp_dir} submodule update --init")
+
+            run(f"tar -c -C {temp_dir} . -z -f {tgz_filename}")
+            run(f"rm -rf {temp_dir}")
+
+        return tgz_filename
 
     def download_pypi(self):
         sdist_filename = self.find_sdist()
         if sdist_filename:
-            log("Using existing source archive")
+            log("Using cached sdist")
         else:
             result = run(f"{self.pip} download{' -v' if self.verbose else ''} --no-deps "
                          f"--no-binary {self.package} --no-build-isolation "
@@ -262,7 +269,7 @@ class BuildWheel:
     def download_url(self, url):
         source_filename = url[url.rfind("/") + 1:]
         if exists(source_filename):
-            log("Using existing source archive")
+            log("Using cached source archive")
         else:
             run(f"wget {url}")
         return source_filename
@@ -270,12 +277,12 @@ class BuildWheel:
     def apply_patches(self):
         patches_dir = f"{self.package_dir}/patches"
         if exists(patches_dir):
-            cd(f"{self.build_dir}/src")
+            cd(self.src_dir)
             for patch_filename in os.listdir(patches_dir):
                 run(f"patch -p1 -i {patches_dir}/{patch_filename}")
 
     def build_wheel(self):
-        cd(f"{self.build_dir}/src")
+        cd(self.src_dir)
         build_script = f"{self.package_dir}/build.sh"
         if exists(build_script):
             return self.build_with_script(build_script)
@@ -335,26 +342,17 @@ class BuildWheel:
             for filename in os.listdir(reqs_lib_dir):
                 for pattern, repl in SONAME_PATTERNS:
                     link_filename = re.sub(pattern, repl, filename)
-                    if link_filename in STANDARD_LIBS:
+                    if link_filename in self.standard_libs:
                         continue  # e.g. torch has libc10.so, which would become libc.so.
                     if link_filename != filename:
                         run(f"ln -s {filename} {reqs_lib_dir}/{link_filename}")
 
     def build_with_script(self, build_script):
-        # Check for license files before starting the build.
-        license_files = ([] if self.meta["about"]["license_file"]
-                         else find_license_files("."))
-
         prefix_dir = f"{self.build_dir}/prefix"
         ensure_empty(prefix_dir)
         os.environ["PREFIX"] = ensure_dir(f"{prefix_dir}/chaquopy")  # Conda variable name
         run(build_script)
-
-        info_dir = f"{prefix_dir}/{self.name_version}.dist-info"
-        ensure_dir(info_dir)
-        for name in license_files:
-            run(f"cp {name} {info_dir}")
-        return self.package_wheel(prefix_dir, os.getcwd())
+        return self.package_wheel(prefix_dir, self.src_dir)
 
     def build_with_pip(self):
         # We can't run "setup.py bdist_wheel" directly, because that would only work with
@@ -375,9 +373,15 @@ class BuildWheel:
     def update_env(self):
         env = {}
 
-        # reqs_dir is needed by some setup.py scripts, for example those which call
-        # numpy.get_include().
-        pythonpath = [join(PYPI_DIR, "build-packages"), self.reqs_dir]
+        env_dir = f"{PYPI_DIR}/env"
+        env["PATH"] = os.pathsep.join([
+            f"{env_dir}/bin",
+            f"{self.reqs_dir}/chaquopy/bin",  # For "-config" scripts.
+            os.environ["PATH"]])
+
+        # Adding reqs_dir to PYTHONPATH allows setup.py to import requirements, for example to
+        # call numpy.get_include().
+        pythonpath = [f"{env_dir}/lib/python", self.reqs_dir]
         if "PYTHONPATH" in os.environ:
             pythonpath.append(os.environ["PYTHONPATH"])
         env["PYTHONPATH"] = os.pathsep.join(pythonpath)
@@ -431,11 +435,15 @@ class BuildWheel:
 
         reqs_prefix = f"{self.reqs_dir}/chaquopy"
         if exists(reqs_prefix):
+            env["PKG_CONFIG_LIBDIR"] = f"{reqs_prefix}/lib/pkgconfig"
             env["CFLAGS"] += f" -I{reqs_prefix}/include"
+
+            # --rpath-link only affects arm64, because it's the only ABI which uses ld.bfd. The
+            # others all use ld.gold, which doesn't try to resolve transitive shared library
+            # dependencies. When we upgrade to a later version of the NDK which uses LLD, we
+            # can probably remove this flag.
             env["LDFLAGS"] += (f" -L{reqs_prefix}/lib"
                                f" -Wl,--rpath-link,{reqs_prefix}/lib")
-            env["PKG_CONFIG"] = "pkg-config --define-prefix"
-            env["PKG_CONFIG_LIBDIR"] = f"{reqs_prefix}/lib/pkgconfig"
 
         env["ARFLAGS"] = "rc"
 
@@ -453,12 +461,13 @@ class BuildWheel:
         env.update({  # Conda variable names, except those starting with CHAQUOPY.
             "CHAQUOPY_ABI": self.abi,
             "CHAQUOPY_PYTHON": PYTHON_VERSION,
+            "CHAQUOPY_TRIPLET": ABIS[self.abi].tool_prefix,
             "CPU_COUNT": str(multiprocessing.cpu_count()),
             "PKG_BUILDNUM": str(self.meta["build"]["number"]),
             "PKG_NAME": self.package,
             "PKG_VERSION": self.version,
             "RECIPE_DIR": self.package_dir,
-            "SRC_DIR": os.getcwd(),
+            "SRC_DIR": self.src_dir,
         })
 
         if self.verbose:
@@ -473,13 +482,14 @@ class BuildWheel:
     # Define the minimum necessary to keep CMake happy. To avoid duplication, we still want to
     # configure as much as possible via update_env.
     def generate_cmake_toolchain(self):
-        # See build/cmake/android.toolchain.cmake in the Google NDK.
+        # See build/cmake/android.toolchain.cmake in the NDK.
         CMAKE_PROCESSORS = {
             "armeabi-v7a": "armv7-a",
             "arm64-v8a": "aarch64",
             "x86": "i686",
             "x86_64": "x86_64",
         }
+        clang_target = f"{ABIS[self.abi].tool_prefix}{self.api_level}".replace("arm-", "armv7a-")
 
         toolchain_filename = join(self.build_dir, "chaquopy.toolchain.cmake")
         log(f"Generating {toolchain_filename}")
@@ -487,13 +497,19 @@ class BuildWheel:
             print(dedent(f"""\
                 set(ANDROID TRUE)
                 set(CMAKE_ANDROID_STANDALONE_TOOLCHAIN {self.toolchain})
-
                 set(CMAKE_SYSTEM_NAME Android)
+
                 set(CMAKE_SYSTEM_VERSION {self.api_level})
                 set(ANDROID_PLATFORM_LEVEL {self.api_level})
                 set(ANDROID_NATIVE_API_LEVEL {self.api_level})  # Deprecated, but used by llvm.
 
+                set(ANDROID_ABI {self.abi})
                 set(CMAKE_SYSTEM_PROCESSOR {CMAKE_PROCESSORS[self.abi]})
+
+                # cmake 3.16.3 defaults to passing a target containing "none", which isn't
+                # recognized by NDK r19.
+                set(CMAKE_C_COMPILER_TARGET {clang_target})
+                set(CMAKE_CXX_COMPILER_TARGET {clang_target})
 
                 # Our requirements dir comes before the sysroot, because the sysroot include
                 # directory contains headers for third-party libraries like libjpeg which may
@@ -506,34 +522,44 @@ class BuildWheel:
                 """), file=toolchain_file)
 
             if self.needs_python:
-                python_lib = f"{self.toolchain}/sysroot/usr/lib/libpython{PYTHON_SUFFIX}.so"
                 print(dedent(f"""\
+                    # See https://cmake.org/cmake/help/latest/module/FindPythonLibs.html .
                     # For maximum compatibility, we set both the input and the output variables.
                     SET(PYTHONLIBS_FOUND TRUE)
-                    SET(PYTHON_LIBRARY {python_lib})
-                    SET(PYTHON_LIBRARIES {python_lib})
+                    SET(PYTHON_LIBRARY {self.python_lib})
+                    SET(PYTHON_LIBRARIES {self.python_lib})
                     SET(PYTHON_INCLUDE_DIR {self.python_include_dir})
                     SET(PYTHON_INCLUDE_DIRS {self.python_include_dir})
+                    SET(PYTHON_INCLUDE_PATH {self.python_include_dir})
+
+                    # pybind11's FindPythonLibsNew.cmake has some extra variables.
                     SET(PYTHON_MODULE_EXTENSION .so)
                     """), file=toolchain_file)
 
     def detect_toolchain(self):
-        for abi in ABIS.values():
-            if abi.tool_prefix in os.listdir(self.toolchain):
-                break
-        else:
-            raise CommandError(f"Failed to detect ABI of toolchain {self.toolchain}")
-        self.abi = abi.name
+        clang = f"{self.toolchain}/bin/clang"
+        for word in open(clang).read().split():
+            if word.startswith("--target"):
+                match = re.search(r"^--target=(.+?)(\d+)$", word)
+                if not match:
+                    raise CommandError(f"Couldn't parse '{word}' in {clang}")
 
-        found_target = False
-        for word in open(f"{self.toolchain}/bin/clang").read().split():
-            if word == "-target":
-                found_target = True
-            elif found_target:
-                self.api_level = int(word[-2:])
+                for abi in ABIS.values():
+                    if match[1] == abi.tool_prefix.replace("arm-", "armv7a-"):
+                        self.abi = abi.name
+                        break
+                else:
+                    raise CommandError(f"Unknown triplet '{match[1]}' in {clang}")
+
+                self.api_level = int(match[2])
+                self.standard_libs = sum((names for min_level, names in STANDARD_LIBS
+                                          if self.api_level >= min_level),
+                                         start=[])
                 break
         else:
-            raise CommandError(f"Failed to detect API level of toolchain {self.toolchain}")
+            raise CommandError(f"Couldn't find target in {clang}")
+
+        log(f"Toolchain ABI: {self.abi}, API level: {self.api_level}")
 
     def fix_wheel(self, in_filename):
         tmp_dir = f"{self.build_dir}/fix_wheel"
@@ -541,14 +567,23 @@ class BuildWheel:
         run(f"unzip -d {tmp_dir} -q {in_filename}")
         info_dir = f"{tmp_dir}/{self.name_version}.dist-info"
 
-        license_file = self.meta["about"]["license_file"]
-        if license_file:
-            run(f"cp {join(self.build_dir, 'src', license_file)} {info_dir}")
+        # This can't be done before the build, because sentencepiece generates a license file
+        # in the source directory during the build.
+        license_files = (find_license_files(self.src_dir) +
+                         find_license_files(self.package_dir))
+        meta_license = self.meta["about"]["license_file"]
+        if meta_license:
+            license_files += [f"{self.src_dir}/{meta_license}"]
+        if license_files:
+            for name in license_files:
+                # We use `-a` because pandas comes with a whole directory of licenses.
+                run(f"cp -a {name} {info_dir}")
         else:
-            find_license_files(info_dir)
+            raise CommandError("Couldn't find license file: see license_file in "
+                               "meta-schema.yaml")
 
         SO_PATTERN = r"\.so(\.|$)"
-        available_libs = set(STANDARD_LIBS)
+        available_libs = set(self.standard_libs)
         for dir_name in [f"{self.reqs_dir}/chaquopy/lib", tmp_dir]:
             if exists(dir_name):
                 for _, _, filenames in os.walk(dir_name):
@@ -557,17 +592,18 @@ class BuildWheel:
 
         reqs = set()
         log("Processing native binaries")
-        for original_path, _, _ in csv.reader(open(f"{info_dir}/RECORD")):
-            is_shared = bool(re.search(SO_PATTERN, original_path))
-            is_static = original_path.endswith(".a")
-            is_executable = original_path.startswith("chaquopy/bin")
+        for path, _, _ in csv.reader(open(f"{info_dir}/RECORD")):
+            is_shared = bool(re.search(SO_PATTERN, path))
+            is_static = path.endswith(".a")
+            is_executable = (path.startswith("chaquopy/bin/") and
+                             not open(f"{tmp_dir}/{path}", "rb").read().startswith(b"#!"))
             if not any([is_executable, is_shared, is_static]):
                 continue
 
             # Because distutils doesn't propertly support cross-compilation, native
             # modules will be tagged with the build platform, e.g.
             # `foo.cpython-36m-x86_64-linux-gnu.so`. Remove these tags.
-            original_path = join(tmp_dir, original_path)
+            original_path = join(tmp_dir, path)
             fixed_path = re.sub(r"\.(cpython-[^.]+|abi3)\.so$", ".so", original_path)
             if fixed_path != original_path:
                 run(f"mv {original_path} {fixed_path}")
@@ -598,6 +634,7 @@ class BuildWheel:
     def package_wheel(self, in_dir, out_dir):
         build_num = os.environ["PKG_BUILDNUM"]
         info_dir = f"{in_dir}/{self.name_version}.dist-info"
+        ensure_dir(info_dir)
         update_message_file(f"{info_dir}/WHEEL",
                             {"Wheel-Version": "1.0",
                              "Root-Is-Purelib": "false"},
@@ -642,7 +679,7 @@ class BuildWheel:
             reqs.append((package, version))
         return reqs
 
-    def load_meta(self, package):
+    def load_meta(self):
         # http://python-jsonschema.readthedocs.io/en/latest/faq/
         def with_defaults(validator_cls):
             def set_defaults(validator, properties, instance, schema):
@@ -659,28 +696,23 @@ class BuildWheel:
         Validator = jsonschema.Draft4Validator
         schema = yaml.safe_load(open(f"{PYPI_DIR}/meta-schema.yaml"))
         Validator.check_schema(schema)
-        meta_str = jinja2.Template(open(f"{self.find_package(package)}/meta.yaml").read()).render()
+        meta_str = jinja2.Template(open(f"{self.package_dir}/meta.yaml").read()).render()
         meta = yaml.safe_load(meta_str)
         with_defaults(Validator)(schema).validate(meta)
         return meta
 
     def find_package(self, name):
-        name = normalize_name_pypi(name)
-        packages_dirs = [f"{PYPI_DIR}/packages"] + self.extra_packages
-        for packages_dir in packages_dirs:
-            package_dir = join(packages_dir, name)
-            if exists(package_dir):
-                return package_dir
+        if "/" in name:
+            package_dir = abspath(name)
         else:
-            raise CommandError(f"Couldn't find '{name}' in {packages_dirs}")
+            package_dir = join(RECIPES_DIR, normalize_name_pypi(name))
+        assert_isdir(package_dir)
+        return package_dir
 
 
 def find_license_files(path):
-    names = [name for name in os.listdir(path)
-             if re.search(r"^(LICEN[CS]E|COPYING)", name.upper())]
-    if not names:
-        raise CommandError("Couldn't find license file: you must add license_file to meta.yaml")
-    return names
+    return [f"{path}/{name}" for name in os.listdir(path)
+            if re.search(r"^(LICEN[CS]E|COPYING)", name.upper())]
 
 
 def update_requirements(filename, reqs):

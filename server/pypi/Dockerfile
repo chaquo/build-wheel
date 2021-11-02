@@ -8,17 +8,12 @@
 
 FROM chaquopy-target
 
-# OpenCV requires Python 2 even when building for Python 3: see its patch.
-RUN apt-get update && \
-    apt-get install -y python && \
-    ln -sf python3 /usr/bin/python
-
 # Miscellaneous build tools
 RUN apt-get update && \
-    apt-get install -y automake cmake git libtool ninja-build patch patchelf pkg-config swig
+    apt-get install -y automake cmake git libtool ninja-build patch pkg-config swig
 
-# protoc (for PyTorch): needs to be exactly this version.
-RUN version=3.6.1 && \
+# protoc (for PyTorch): use newest version from third_party/protobuf/CHANGES.txt.
+RUN version=3.11.4 && \
     wget https://github.com/protocolbuffers/protobuf/releases/download/v$version/protoc-$version-linux-x86_64.zip && \
     unzip -d /usr protoc-*.zip && \
     rm protoc-*.zip
@@ -26,6 +21,13 @@ RUN version=3.6.1 && \
 # Bazel (for TensorFlow)
 RUN wget https://github.com/bazelbuild/bazelisk/releases/download/v1.2.1/bazelisk-linux-amd64 && \
     mv bazelisk-linux-amd64 /usr/local/bin/bazel
+
+# Rust (for Tokenizers)
+RUN wget https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init && \
+    chmod +x rustup-init && \
+    ./rustup-init -y && \
+    rm rustup-init
+ENV PATH="/root/.cargo/bin:$PATH"
 
 COPY requirements.txt pypi/
 RUN pip3 install -r pypi/requirements.txt
