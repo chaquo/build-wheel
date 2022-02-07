@@ -1,17 +1,20 @@
 # Introduction
 
 This repository contains the build-wheel tool, which produces Android .whl files for Chaquopy.
-build-wheel itself only runs on Linux x86-64. However, it can build .whl files for all [Android
+
+build-wheel can build .whl files for all [Android
 ABIs](https://developer.android.com/ndk/guides/abis) (armeabi-v7a, arm64-v8a, x86 and x86_64).
+However, the tool itself only runs on Linux x86-64. If you don't already have a Linux machine
+available, a cheap virtual server from somewhere like DigitalOcean will do just fine.
 
 
 # License
 
 Copyright (c) 2021 Chaquo Ltd
 
-If you have purchased a license for build-wheel, then you may use the tool and distribute the
-resulting .whl files however you like, including building them into an app and distributing
-that app. However, redistribution of build-wheel itself is not permitted.
+If Chaquo Ltd has invited you to this repository, then you may use the build-wheel tool and
+distribute the resulting .whl files however you like, including building them into an app and
+distributing that app. However, redistribution of build-wheel itself is not permitted.
 
 
 # Adding a package
@@ -30,6 +33,7 @@ Inside the recipe directory, add the following files:
 The following examples are included:
 
 * multidict: a minimal example, downloaded from PyPI.
+* cryptography: a package with a build-time requirement.
 * python-example: a pybind11-based package, downloaded from a Git repository.
 * cmake-example: similar to python-example, but uses cmake. A patch is used to help cmake find
   the Android toolchain file.
