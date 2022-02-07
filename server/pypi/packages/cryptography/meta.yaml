@@ -1,0 +1,9 @@
+package:
+  name: cryptography
+  version: 3.3.2
+
+requirements:
+  build:
+    - cffi 1.13.2
+  host:
+    - openssl
