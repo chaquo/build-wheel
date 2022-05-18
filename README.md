@@ -33,6 +33,7 @@ Inside the recipe directory, add the following files:
 The following examples are included:
 
 * multidict: a minimal example, downloaded from PyPI.
+* cython-example: a minimal example, built from a local directory.
 * cryptography: a package with a build-time requirement.
 * python-example: a pybind11-based package, downloaded from a Git repository.
 * cmake-example: similar to python-example, but uses cmake. A patch is used to help cmake find
