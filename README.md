@@ -95,6 +95,7 @@ The resulting .whl files will be generated in `server/pypi/dist`.
 
 .whl files can be built into your app using the [`pip`
 block](https://chaquo.com/chaquopy/doc/current/android.html#requirements) in your
-`build.gradle` file. To tell pip where to find the files, use the `options` setting to pass
-either [`--find-links`](https://pip.pypa.io/en/stable/reference/pip_install/#cmdoption-f) or
-[`--extra-index-url`](https://pip.pypa.io/en/stable/reference/pip_install/#cmdoption-extra-index-url).
+`build.gradle` file. First, add an `options` line to pass
+[`--extra-index-url`](https://pip.pypa.io/en/stable/cli/pip_install/#cmdoption-extra-index-url)
+with the location of the `dist` directory mentioned above. Either an HTTP URL or a local path
+can be used. Then add an `install` line giving the name of your package.
