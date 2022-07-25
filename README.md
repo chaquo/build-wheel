@@ -8,15 +8,6 @@ However, the tool itself only runs on Linux x86-64. If you don't already have a 
 available, a cheap virtual server from somewhere like DigitalOcean will do just fine.
 
 
-# License
-
-Copyright (c) 2021 Chaquo Ltd
-
-If Chaquo Ltd has invited you to this repository, then you may use the build-wheel tool and
-distribute the resulting .whl files however you like, including building them into an app and
-distributing that app. However, redistribution of build-wheel itself is not permitted.
-
-
 # Adding a package
 
 Create a recipe directory in `packages`. Its name must be in PyPI normalized form (PEP 503).
