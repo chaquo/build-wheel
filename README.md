@@ -57,7 +57,8 @@ update the build-wheel image.
 
 Then run build-wheel from the `server/pypi` directory as follows:
 
-    docker run -v $(pwd)/dist:/root/pypi/dist build-wheel --toolchain target/toolchains/<abi> <package>
+    docker run -v $(pwd)/packages:/root/pypi/packages -v $(pwd)/dist:/root/pypi/dist \
+        build-wheel --toolchain target/toolchains/<abi> <package>
 
 Where:
 
