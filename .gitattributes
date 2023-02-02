@@ -1,7 +1,0 @@
-# Give every clone's working tree the same line endings, regardless of the OS.
-
-# Use LF by default.
-* text=auto eol=lf
-
-# Use CRLF for types that require it.
-*.bat eol=crlf

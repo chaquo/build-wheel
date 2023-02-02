@@ -1,6 +1,0 @@
-package:
-  name: greenlet
-  version: 0.4.15
-
-build:
-  number: 1

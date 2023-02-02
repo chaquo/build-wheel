@@ -1,6 +1,0 @@
-package:
-  name: netifaces
-  version: 0.10.9
-
-build:
-  number: 1
